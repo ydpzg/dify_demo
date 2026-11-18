@@ -109,7 +109,7 @@ python3 business_api.py
 - `GET /orders/order-1001`：Bearer Token 鉴权后返回合成订单数据。
 - `POST /refunds`：校验合成订单和金额，返回 `SIMULATED`，不会执行真实退款。
 
-在 Dify 的 **Integrations > Tools > Swagger API** 中导入 `openapi/business_tools.yaml`，配置同一个 `DEMO_BUSINESS_API_TOKEN`，然后把工具加入 Agent 或 Workflow/Chatflow 的 Tool 节点。可以用这些假数据试跑：
+在 Dify 的 **Integrations > Tools > Swagger API** 中导入 `openapi/business_tools.yaml`，配置同一个 `DEMO_BUSINESS_API_TOKEN`，然后把工具加入 Agent 或 Workflow/Chatflow 的 Tool 节点。这里配置的是一个固定的 Dify-to-demo-service 凭证，不是终端用户的业务 Token。可以用这些假数据试跑：
 
 ```text
 order-1001  已送达，总额 USD 58.50
@@ -119,6 +119,55 @@ order-1002  处理中，总额 USD 132.00
 **网络地址要从 Dify 服务端可达。** 本地 Dify Docker 部署在 macOS/Windows 时，OpenAPI 文件里的 `host.docker.internal` 通常可访问宿主机；Linux 或不同网络拓扑请替换 `servers.url`。Dify Cloud 无法直接访问你的 `localhost`，应部署到可访问的 HTTPS 环境或使用受控的安全隧道。不要把无鉴权的开发服务直接暴露到公网。
 
 真实业务接入时，将 mock handler 替换为你自己的订单/CRM/库存 API，并在业务服务端重新做身份授权、字段校验、金额上限、幂等、防重放和审计。不要让 LLM 自己决定是否有权退款，也不要把数据库写权限直接交给模型。
+
+### 如果业务 API 要求用户自己的 Token
+
+先区分四种值，避免把它们当成同一种凭证：
+
+| 值 | 用途 | 当前 Demo 是否使用 |
+| --- | --- | --- |
+| Dify `user` | Dify 侧区分终端用户、隔离会话/文件；它不是认证凭证。 | 使用，例如 `customer-123`。 |
+| Dify App API Key | 你的后端调用 Dify App API。 | 使用，放在后端 `.env`。 |
+| `DEMO_BUSINESS_API_TOKEN` | Dify 工具调用本 Demo 业务 API 的固定服务凭证。 | 使用；所有 Demo 调用共享此值。 |
+| 业务用户 Token | 代表一个真实业务用户访问上游业务 API。 | **当前 Demo 不使用，也不会由 Dify 自动传递。** |
+
+Dify 不会根据 `user` 字段查找或生成业务用户 Token。当前 OpenAPI 工具里填写的 Bearer 凭证是固定配置；不会因为本轮请求的 `user` 不同而自动切换。Dify 官方也把终端用户 `user` 定义为标识，不是认证。参见 [End User Identity](https://docs.dify.ai/en/api-reference/guides/end-user-identity) 和 [Dify Tools](https://docs.dify.ai/en/cloud/use-dify/workspace/tools)。
+
+#### 方案 A：由 BFF 把用户 Token 传入 Dify
+
+只有在允许用户 Token 经过 Dify，且你已评估应用输入、运行日志和追踪数据的留存与访问控制时使用。调用方先在自己的后端完成登录验证，再把 Token 放到一个专用应用输入变量中；不要放在 `query`、提示词或模型可生成的工具参数里：
+
+```python
+payload = {
+    "inputs": {
+        "question": "查询我的订单",
+        "business_access_token": user_access_token,
+    },
+    "query": "查询我的订单",
+    "response_mode": "blocking",
+    "user": internal_user_id,
+}
+```
+
+在 Dify Workflow/Chatflow 中定义 `business_access_token` 输入变量，再用 HTTP Request 节点的变量选择器把它绑定到业务请求的 `Authorization` Header：`Bearer <business_access_token>`。不要把这个变量接入 LLM 节点的 Prompt。每个请求都应由 BFF 根据已认证的服务端会话填值，不能接受浏览器随意提交的 Token 或 `user` 字段。HTTP Request 节点见 [官方文档](https://docs.dify.ai/en/cloud/use-dify/nodes/http-request)。
+
+这是“把原始用户 Token 交给 Dify”的方案：只使用短时、最小权限 Token，避免在 Agent 工具定义中让模型看到或控制该 Token，并核实你的 Dify 版本如何记录输入、节点运行数据和追踪。若不能接受 Token 出现在 Dify 的数据面，就不要选此方案。
+
+#### 方案 B：Token Broker（优先推荐）
+
+让用户 Token 始终留在你的后端或密钥库中：
+
+```text
+用户 → BFF：完成登录并取得/查到用户 Token
+BFF → Dify：传普通业务输入 + 短时 request_context_id
+Dify → 业务网关：使用固定 Dify 服务凭证 + request_context_id
+业务网关 → Token Broker：校验并兑换一次性上下文，取得对应用户 Token
+业务网关 → 原业务 API：Authorization: Bearer <用户自己的 Token>
+```
+
+`request_context_id` 应随机生成、短时有效、一次性使用，并绑定用户、租户、允许操作和当前请求；网关还要验证 Dify 服务身份。网关从服务端密钥库取回真实用户 Token 后再调用业务 API，因此**业务 API 仍然收到用户自己的 Token**，只是 Dify 不接触原始 Token。不要把这个上下文 ID 当作长期 API Key。
+
+如果 Dify 必须直接调用上游且上游强制使用用户 Token，方案 A 是直接转发路径；若 Token 不得进入 Dify，则在 Dify 和上游之间增加网关/Token Broker。Agent 场景下尤其不要把用户 Token 设计成模型可填写的工具参数。当前项目里的 `business_api.py` 和 `openapi/business_tools.yaml` 是共享服务凭证的安全演示，不是用户级 OAuth/Token 转发实现。
 
 ## 6. 文件与音频
 
