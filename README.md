@@ -287,6 +287,35 @@ python3 -m unittest discover -s tests -v
 
 测试会校验 CLI 参数解析、JSON 输入验证，以及 mock 订单接口的鉴权和“模拟退款”响应。
 
+## 10. 模型供应商 Key 与模型网关
+
+如果直接在 Dify 的 Model Provider 中填写 OpenAI、DeepSeek 或其他模型供应商的 API Key，那么 Dify 会保存并使用这个 Key 调用对应的模型服务。这个 Key 不会自动传给你的业务 API，但它已经进入 Dify 的凭证管理范围；Dify Cloud 中 Provider 配置由 workspace owner/admin 管理，配置的 Key 可被该 workspace 的应用使用。
+
+如果不希望原始供应商 Key 进入 Dify，需要改变**请求目标**，不是只在旁边部署一个网关：
+
+```text
+直连供应商：
+Dify ── 供应商 API Key ──> OpenAI / DeepSeek / 其他模型厂商
+
+经过网关：
+Dify ── 网关地址 + 网关凭证 ──> 你的模型网关
+                                      │
+                                      └── 供应商地址 + 原始供应商 Key ──> 模型厂商
+```
+
+因此，“网关有 Key”只有在 Dify 的 Model Provider **Base URL/自定义端点指向网关**时才有意义。如果 Dify 仍然配置并直连厂商官方地址，网关不会参与请求，Dify 仍需要持有供应商 Key。网关应该提供 Dify 所需的兼容接口，至少正确代理模型名、普通响应、SSE 流式响应，以及你使用的工具调用/多模态字段。
+
+接入步骤通常是：
+
+1. 在网关中保存原始供应商 Key，并配置上游模型地址、模型白名单、超时、限流和审计策略。
+2. 网关暴露与 Dify Provider 兼容的 API 地址，例如 OpenAI-compatible 的 `/v1` 接口。
+3. 在 Dify 的模型 Provider 中选择支持自定义端点的配置方式，把 Base URL 改为网关地址，填写的 API Key 改为网关凭证，而不是供应商 Key。
+4. 用 Dify 的模型测试验证普通响应、流式响应、工具调用和错误码；不同 Provider、Dify Cloud/自托管版本的自定义端点入口可能不同，应以当前实例界面和文档为准。
+
+这样 Dify 仍然负责发起模型请求，但它请求的是你的网关；网关再用自己保管的供应商 Key 调用上游。Dify 只能看到网关凭证和请求/响应内容，不能从配置中取得原始供应商 Key。注意：网关不是内容隔离层，提示词、业务数据和模型输出仍会经过 Dify 与网关，必须分别评估两边的日志、追踪、数据保留和访问权限。
+
+官方参考：[Model Providers](https://docs.dify.ai/en/cloud/use-dify/workspace/model-providers)。
+
 ## 安全与生产化边界
 
 - App API Key、Knowledge Service Key 和 MCP URL 都是凭证；只保存在后端 Secret Manager 或本地未跟踪的 `.env`，不要放进浏览器/移动端。
