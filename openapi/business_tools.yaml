@@ -1,0 +1,85 @@
+openapi: 3.0.3
+info:
+  title: Demo Business Tools
+  version: 1.0.0
+  description: Synthetic order lookup and simulated refund tool for a Dify integration demo.
+servers:
+  # Change this to an address reachable from your Dify deployment.
+  - url: http://host.docker.internal:8088
+security:
+  - bearerAuth: []
+paths:
+  /orders/{order_id}:
+    get:
+      operationId: getOrder
+      summary: Look up a demo order
+      description: Returns synthetic order status and total. Does not access production data.
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          description: Use order-1001 or order-1002 for this demo.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Order found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      order_id: { type: string }
+                      status: { type: string }
+                      total: { type: number }
+                      currency: { type: string }
+                  demo: { type: boolean }
+        '401': { description: Missing or invalid bearer token }
+        '404': { description: Order not found }
+  /refunds:
+    post:
+      operationId: simulateRefund
+      summary: Simulate a refund request
+      description: Validates a synthetic refund request and returns SIMULATED; never issues a real refund.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [order_id, amount, reason]
+              properties:
+                order_id:
+                  type: string
+                  enum: [order-1001, order-1002]
+                amount:
+                  type: number
+                  minimum: 0
+                  exclusiveMinimum: true
+                reason:
+                  type: string
+                  minLength: 3
+      responses:
+        '200':
+          description: Simulated refund response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  refund_id: { type: string }
+                  order_id: { type: string }
+                  amount: { type: number }
+                  currency: { type: string }
+                  status: { type: string, enum: [SIMULATED] }
+                  message: { type: string }
+        '401': { description: Missing or invalid bearer token }
+        '422': { description: Invalid demo request }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer

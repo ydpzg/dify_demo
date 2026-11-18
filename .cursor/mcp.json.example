@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "dify-demo-app": {
+      "url": "PASTE_THE_DIFY_APP_MCP_SERVER_URL_HERE"
+    }
+  }
+}
